@@ -4,6 +4,7 @@ import pandas as pd
 import time
 import json
 import io
+import zipfile
 from pathlib import Path
 from datetime import datetime, date
 from collections import defaultdict
@@ -12,25 +13,26 @@ from collections import defaultdict
 
 AMFI_URL   = "https://www.amfiindia.com/spages/NAVAll.txt"
 MFAPI_BASE = "https://api.mfapi.in/mf"
-CACHE_DIR  = Path("/tmp/mf_cache")  # Ephemeral but persists within a session
+CACHE_DIR  = Path("/tmp/mf_cache")
 SLEEP_SEC  = 0.2
 
-TARGET_CATEGORIES = [
-    "Large & Mid Cap Fund",
-    "Large Cap Fund",
-    "Flexi Cap Fund",
-    "Mid Cap Fund",
-    "Small Cap Fund",
-    "Multi Cap Fund",
-    "Value Fund",
-    "Contra Fund",
-    "Focused Fund",
-    "Dividend Yield Fund",
-    "Sectoral/ Thematic",
-    "ELSS",
-    "Balanced Advantage",
-    "Aggressive Hybrid Fund",
-    "Conservative Hybrid Fund",
+# Default selected categories on first load
+DEFAULT_CATEGORIES = [
+    "Equity Scheme - Large & Mid Cap Fund",
+    "Equity Scheme - Large Cap Fund",
+    "Equity Scheme - Flexi Cap Fund",
+    "Equity Scheme - Mid Cap Fund",
+    "Equity Scheme - Small Cap Fund",
+    "Equity Scheme - Multi Cap Fund",
+    "Equity Scheme - Value Fund",
+    "Equity Scheme - Contra Fund",
+    "Equity Scheme - Focused Fund",
+    "Equity Scheme - Dividend Yield Fund",
+    "Equity Scheme - Sectoral/ Thematic",
+    "Equity Scheme - ELSS",
+    "Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage",
+    "Hybrid Scheme - Aggressive Hybrid Fund",
+    "Hybrid Scheme - Conservative Hybrid Fund",
 ]
 
 # ── CORE FUNCTIONS ────────────────────────────────────────────────────────────
@@ -38,11 +40,19 @@ TARGET_CATEGORIES = [
 def setup():
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-def fetch_amfi_schemes():
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_amfi_data():
+    """
+    Fetches AMFI master file once per hour.
+    Returns (all_categories, all_schemes).
+    """
     resp = requests.get(AMFI_URL, timeout=30)
     resp.raise_for_status()
+
     schemes = []
+    categories = set()
     current_category = ""
+
     for raw_line in resp.text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -50,6 +60,7 @@ def fetch_amfi_schemes():
         if "Schemes(" in line and line.endswith(")"):
             start = line.index("(") + 1
             current_category = line[start:-1].strip()
+            categories.add(current_category)
             continue
         if line.lower().startswith("scheme code"):
             continue
@@ -62,17 +73,21 @@ def fetch_amfi_schemes():
             continue
         name = parts[3].strip()
         if code and name:
-            schemes.append({"code": code, "name": name, "category": current_category})
-    return schemes
+            schemes.append({
+                "code":     code,
+                "name":     name,
+                "category": current_category,
+            })
+
+    return sorted(categories), schemes
 
 def filter_schemes(schemes, selected_cats):
+    """Exact category match — no substring ambiguity."""
     result = defaultdict(list)
+    selected_set = set(selected_cats)
     for s in schemes:
-        cat = s["category"].lower()
-        for target in TARGET_CATEGORIES:
-            if target.lower() in cat and target in selected_cats:
-                result[target].append(s)
-                break
+        if s["category"] in selected_set:
+            result[s["category"]].append(s)
     return dict(result)
 
 def fetch_nav_cached(code):
@@ -117,9 +132,24 @@ def build_excel_bytes(collected):
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         for cat_name, df in sorted(collected.items()):
-            sheet = cat_name.replace("/", "-").strip()[:31]
+            sheet = cat_name.replace("/", "-").replace(":", "-").strip()[:31]
             df.to_excel(writer, sheet_name=sheet)
     return buffer.getvalue()
+
+def create_cache_zip():
+    """Zip all cached JSON files for download."""
+    buffer = io.BytesIO()
+    files  = list(CACHE_DIR.glob("*.json"))
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in files:
+            zf.write(f, f.name)
+    return buffer.getvalue(), len(files)
+
+def load_cache_zip(uploaded_zip):
+    """Extract uploaded ZIP into cache directory."""
+    with zipfile.ZipFile(io.BytesIO(uploaded_zip.read())) as zf:
+        zf.extractall(CACHE_DIR)
+    return len(list(CACHE_DIR.glob("*.json")))
 
 # ── STREAMLIT UI ──────────────────────────────────────────────────────────────
 
@@ -127,20 +157,42 @@ def main():
     st.set_page_config(
         page_title="MF NAV Downloader",
         page_icon="📈",
-        layout="wide"
+        layout="wide",
     )
 
     st.title("📈 MF NAV Historical Downloader")
     st.caption("Data: AMFI (scheme list + categories) · mfapi.in (historical NAVs) · Free, no API key needed")
     st.divider()
 
+    setup()
+
+    # ── Cache management ──────────────────────────────────────────────────────
+    with st.expander("⚡ Speed up with cached data (optional but recommended)"):
+        st.write(
+            "Upload a previously downloaded cache ZIP to skip re-downloading "
+            "funds that haven't changed. After each run you can download the "
+            "updated cache to save for next time."
+        )
+        uploaded = st.file_uploader("Upload cache ZIP", type="zip", label_visibility="collapsed")
+        if uploaded:
+            count = load_cache_zip(uploaded)
+            st.success(f"✅ Cache loaded — {count:,} funds ready, no re-download needed for these.")
+
+    st.divider()
+
+    # ── Load categories from AMFI ─────────────────────────────────────────────
+    with st.spinner("Loading category list from AMFI..."):
+        all_categories, all_schemes = fetch_amfi_data()
+
+    valid_defaults = [c for c in DEFAULT_CATEGORIES if c in all_categories]
+
     col1, col2 = st.columns([3, 1])
 
     with col1:
         selected_cats = st.multiselect(
-            "Select categories",
-            options=TARGET_CATEGORIES,
-            default=TARGET_CATEGORIES,
+            f"Select categories ({len(all_categories)} available from AMFI)",
+            options=all_categories,
+            default=valid_defaults,
         )
 
     with col2:
@@ -157,18 +209,19 @@ def main():
         st.warning("Select at least one category to continue.")
         return
 
+    by_category = filter_schemes(all_schemes, selected_cats)
+    total       = sum(len(v) for v in by_category.values())
+    cached      = sum(1 for s in all_schemes
+                      if s["category"] in set(selected_cats)
+                      and (CACHE_DIR / f"{s['code']}.json").exists())
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Categories selected", len(by_category))
+    col_b.metric("Total schemes", total)
+    col_c.metric("Already cached", f"{cached} / {total}")
+
     if st.button("🚀 Run Download", type="primary", use_container_width=True):
-        setup()
 
-        # Step 1: Fetch scheme list from AMFI
-        with st.spinner("Fetching AMFI scheme list..."):
-            schemes     = fetch_amfi_schemes()
-            by_category = filter_schemes(schemes, selected_cats)
-
-        total = sum(len(v) for v in by_category.values())
-        st.info(f"**{total} schemes** found across **{len(by_category)} categories**")
-
-        # Step 2: Download NAV history
         st.write("#### Downloading NAV history...")
         progress_bar = st.progress(0)
         status       = st.empty()
@@ -207,25 +260,43 @@ def main():
                 df = df.sort_index()
                 collected[cat_name] = df
 
-        # Step 3: Build Excel
         status.caption("Building Excel file...")
         excel_bytes = build_excel_bytes(collected)
 
-        # Clear progress UI
         progress_bar.empty()
         status.empty()
         cat_status.empty()
 
         st.success(f"✅ Done! {len(collected)} sheets ready.")
+        st.divider()
 
         date_tag = datetime.today().strftime("%Y%m%d")
-        st.download_button(
-            label="📥 Download Excel",
-            data=excel_bytes,
-            file_name=f"MF_NAV_History_{date_tag}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            type="primary",
+
+        col_dl1, col_dl2 = st.columns(2)
+
+        with col_dl1:
+            st.download_button(
+                label="📥 Download Excel",
+                data=excel_bytes,
+                file_name=f"MF_NAV_History_{date_tag}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                type="primary",
+            )
+
+        with col_dl2:
+            cache_zip, cache_count = create_cache_zip()
+            st.download_button(
+                label=f"💾 Download Cache ({cache_count:,} funds)",
+                data=cache_zip,
+                file_name=f"mf_cache_{date_tag}.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+
+        st.info(
+            "💡 Save the cache ZIP — upload it next time to skip re-downloading "
+            f"{cache_count:,} funds and go straight to the Excel."
         )
 
 if __name__ == "__main__":
