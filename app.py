@@ -16,24 +16,63 @@ MFAPI_BASE = "https://api.mfapi.in/mf"
 CACHE_DIR  = Path("/tmp/mf_cache")
 SLEEP_SEC  = 0.2
 
-# Default selected categories on first load
-DEFAULT_CATEGORIES = [
-    "Equity Scheme - Large & Mid Cap Fund",
-    "Equity Scheme - Large Cap Fund",
-    "Equity Scheme - Flexi Cap Fund",
-    "Equity Scheme - Mid Cap Fund",
-    "Equity Scheme - Small Cap Fund",
-    "Equity Scheme - Multi Cap Fund",
-    "Equity Scheme - Value Fund",
-    "Equity Scheme - Contra Fund",
-    "Equity Scheme - Focused Fund",
-    "Equity Scheme - Dividend Yield Fund",
-    "Equity Scheme - Sectoral/ Thematic",
-    "Equity Scheme - ELSS",
-    "Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage",
-    "Hybrid Scheme - Aggressive Hybrid Fund",
-    "Hybrid Scheme - Conservative Hybrid Fund",
-]
+# ── Category definitions ────────────────────────────────────────────────────
+# Each entry = (display name, asset_class, mode, config)
+#   mode = "direct"   → config is list of exact AMFI category labels
+#   mode = "keyword"  → config is (parent AMFI category, list of keywords to match in scheme name)
+
+CATEGORY_MAP = {
+    # ── Equity ──
+    "Equity - Large Cap":         ("Equity",  "direct",  ["Equity Scheme - Large Cap Fund"]),
+    "Equity - Mid Cap":           ("Equity",  "direct",  ["Equity Scheme - Mid Cap Fund"]),
+    "Equity - Small Cap":         ("Equity",  "direct",  ["Equity Scheme - Small Cap Fund"]),
+    "Equity - Multi Cap":         ("Equity",  "direct",  ["Equity Scheme - Multi Cap Fund"]),
+    "Equity - Flexi Cap":         ("Equity",  "direct",  ["Equity Scheme - Flexi Cap Fund"]),
+    "Equity - Large & Mid Cap":   ("Equity",  "direct",  ["Equity Scheme - Large & Mid Cap Fund"]),
+    "Equity - Value & Contra":    ("Equity",  "direct",  ["Equity Scheme - Value Fund", "Equity Scheme - Contra Fund"]),
+    "Equity - Dividend Yield":    ("Equity",  "direct",  ["Equity Scheme - Dividend Yield Fund"]),
+    "Equity - Focused":           ("Equity",  "direct",  ["Equity Scheme - Focused Fund"]),
+    "Equity - ELSS":              ("Equity",  "direct",  ["Equity Scheme - ELSS", "ELSS"]),
+    "Equity - Quality":           ("Equity",  "keyword", ("Equity Scheme - Sectoral/ Thematic", ["quality"])),
+    "Equity - Quant":             ("Equity",  "keyword", ("Equity Scheme - Sectoral/ Thematic", ["quant"])),
+
+    # ── Gold ──
+    "Gold - ETF":                 ("Gold",    "direct",  ["Other Scheme - Gold ETF"]),
+    "Gold - Fund/ ETF FoF":       ("Gold",    "keyword", ("Other Scheme - FoF Domestic", ["gold"])),
+
+    # ── Hybrid ──
+    "Hybrid - Balanced Advantage / DAA": ("Hybrid", "direct", [
+        "Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage",
+        "Hybrid Schemes - Balanced Advantage Fund/ Dynamic Asset Allocation",
+    ]),
+    "Hybrid - Aggressive Hybrid": ("Hybrid",  "direct",  [
+        "Hybrid Scheme - Aggressive Hybrid Fund",
+        "Hybrid Schemes - Aggressive Hybrid Fund",
+    ]),
+    "Hybrid - Arbitrage":         ("Hybrid",  "direct",  ["Hybrid Scheme - Arbitrage Fund"]),
+    "Hybrid - Equity Savings":    ("Hybrid",  "direct",  ["Hybrid Scheme - Equity Savings"]),
+    "Hybrid - Conservative Hybrid": ("Hybrid", "direct", ["Hybrid Scheme - Conservative Hybrid Fund"]),
+    "Hybrid - Balanced Hybrid":   ("Hybrid",  "direct",  ["Hybrid Scheme - Balanced Hybrid Fund"]),
+    "Hybrid - Multi Asset Allocation": ("Hybrid", "direct", ["Hybrid Scheme - Multi Asset Allocation"]),
+
+    # ── Debt ──
+    "Debt - Overnight":           ("Debt",    "direct",  ["Debt Scheme - Overnight Fund"]),
+    "Debt - Liquid":              ("Debt",    "direct",  ["Debt Scheme - Liquid Fund"]),
+    "Debt - Money Market":        ("Debt",    "direct",  ["Debt Scheme - Money Market Fund"]),
+    "Debt - Ultra Short Duration":("Debt",    "direct",  ["Debt Scheme - Ultra Short Duration Fund"]),
+    "Debt - Low Duration":        ("Debt",    "direct",  ["Debt Scheme - Low Duration Fund"]),
+    "Debt - Floating Rate":       ("Debt",    "direct",  ["Debt Scheme - Floater Fund"]),
+    "Debt - Banking and PSU":     ("Debt",    "direct",  ["Debt Scheme - Banking and PSU Fund"]),
+    "Debt - Corporate Bond":      ("Debt",    "direct",  ["Debt Scheme - Corporate Bond Fund"]),
+    "Debt - Short Duration":      ("Debt",    "direct",  ["Debt Scheme - Short Duration Fund"]),
+    "Debt - Medium to Long Duration": ("Debt","direct",  ["Debt Scheme - Medium to Long Duration Fund"]),
+    "Debt - Medium Duration":     ("Debt",    "direct",  ["Debt Scheme - Medium Duration Fund"]),
+    "Debt - Gilt":                ("Debt",    "direct",  ["Debt Scheme - Gilt Fund", "Debt Scheme - Gilt Fund with 10 year constant duration"]),
+    "Debt - Long Duration":       ("Debt",    "direct",  ["Debt Scheme - Long Duration Fund"]),
+    "Debt - Dynamic Bond":        ("Debt",    "direct",  ["Debt Scheme - Dynamic Bond"]),
+    "Debt - Credit Risk":         ("Debt",    "direct",  ["Debt Scheme - Credit Risk Fund"]),
+    "Debt - Target Maturity":     ("Debt",    "keyword", ("Other Scheme - Index Funds", ["target maturity", "bharat bond"])),
+}
 
 # ── CORE FUNCTIONS ────────────────────────────────────────────────────────────
 
@@ -42,15 +81,11 @@ def setup():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_amfi_data():
-    """
-    Fetches AMFI master file once per hour.
-    Returns (all_categories, all_schemes).
-    """
+    """Fetches AMFI master file once per hour."""
     resp = requests.get(AMFI_URL, timeout=30)
     resp.raise_for_status()
 
     schemes = []
-    categories = set()
     current_category = ""
 
     for raw_line in resp.text.splitlines():
@@ -60,7 +95,6 @@ def fetch_amfi_data():
         if "Schemes(" in line and line.endswith(")"):
             start = line.index("(") + 1
             current_category = line[start:-1].strip()
-            categories.add(current_category)
             continue
         if line.lower().startswith("scheme code"):
             continue
@@ -78,16 +112,25 @@ def fetch_amfi_data():
                 "name":     name,
                 "category": current_category,
             })
+    return schemes
 
-    return sorted(categories), schemes
-
-def filter_schemes(schemes, selected_cats):
-    """Exact category match — no substring ambiguity."""
+def build_display_map(schemes, selected_displays):
+    """Maps each selected display category to its schemes."""
     result = defaultdict(list)
-    selected_set = set(selected_cats)
-    for s in schemes:
-        if s["category"] in selected_set:
-            result[s["category"]].append(s)
+    for display in selected_displays:
+        asset_class, mode, config = CATEGORY_MAP[display]
+        if mode == "direct":
+            amfi_cats = set(config)
+            for s in schemes:
+                if s["category"] in amfi_cats:
+                    result[display].append(s)
+        elif mode == "keyword":
+            parent_cat, keywords = config
+            for s in schemes:
+                if s["category"] == parent_cat:
+                    name_lower = s["name"].lower()
+                    if any(kw.lower() in name_lower for kw in keywords):
+                        result[display].append(s)
     return dict(result)
 
 def fetch_nav_cached(code):
@@ -137,7 +180,6 @@ def build_excel_bytes(collected):
     return buffer.getvalue()
 
 def create_cache_zip():
-    """Zip all cached JSON files for download."""
     buffer = io.BytesIO()
     files  = list(CACHE_DIR.glob("*.json"))
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -146,7 +188,6 @@ def create_cache_zip():
     return buffer.getvalue(), len(files)
 
 def load_cache_zip(uploaded_zip):
-    """Extract uploaded ZIP into cache directory."""
     with zipfile.ZipFile(io.BytesIO(uploaded_zip.read())) as zf:
         zf.extractall(CACHE_DIR)
     return len(list(CACHE_DIR.glob("*.json")))
@@ -154,71 +195,99 @@ def load_cache_zip(uploaded_zip):
 # ── STREAMLIT UI ──────────────────────────────────────────────────────────────
 
 def main():
-    st.set_page_config(
-        page_title="MF NAV Downloader",
-        page_icon="📈",
-        layout="wide",
-    )
-
+    st.set_page_config(page_title="MF NAV Downloader", page_icon="📈", layout="wide")
     st.title("📈 MF NAV Historical Downloader")
     st.caption("Data: AMFI (scheme list + categories) · mfapi.in (historical NAVs) · Free, no API key needed")
     st.divider()
 
     setup()
 
-    # ── Cache management ──────────────────────────────────────────────────────
+    # ── Cache management ──
     with st.expander("⚡ Speed up with cached data (optional but recommended)"):
         st.write(
             "Upload a previously downloaded cache ZIP to skip re-downloading "
-            "funds that haven't changed. After each run you can download the "
-            "updated cache to save for next time."
+            "funds that haven't changed."
         )
         uploaded = st.file_uploader("Upload cache ZIP", type="zip", label_visibility="collapsed")
         if uploaded:
             count = load_cache_zip(uploaded)
-            st.success(f"✅ Cache loaded — {count:,} funds ready, no re-download needed for these.")
+            st.success(f"✅ Cache loaded — {count:,} funds ready.")
 
     st.divider()
 
-    # ── Load categories from AMFI ─────────────────────────────────────────────
-    with st.spinner("Loading category list from AMFI..."):
-        all_categories, all_schemes = fetch_amfi_data()
+    # ── Load AMFI data ──
+    with st.spinner("Loading data from AMFI..."):
+        schemes = fetch_amfi_data()
 
-    valid_defaults = [c for c in DEFAULT_CATEGORIES if c in all_categories]
+    # ── Category selection grouped by asset class ──
+    st.subheader("Select categories")
 
-    col1, col2 = st.columns([3, 1])
+    equity_cats = [k for k, v in CATEGORY_MAP.items() if v[0] == "Equity"]
+    gold_cats   = [k for k, v in CATEGORY_MAP.items() if v[0] == "Gold"]
+    hybrid_cats = [k for k, v in CATEGORY_MAP.items() if v[0] == "Hybrid"]
+    debt_cats   = [k for k, v in CATEGORY_MAP.items() if v[0] == "Debt"]
 
-    with col1:
-        selected_cats = st.multiselect(
-            f"Select categories ({len(all_categories)} available from AMFI)",
-            options=all_categories,
-            default=valid_defaults,
+    col_e, col_g, col_h, col_d = st.columns(4)
+
+    with col_e:
+        st.markdown("**Equity**")
+        eq_selected = [c for c in equity_cats if st.checkbox(c.replace("Equity - ", ""), value=True, key=f"eq_{c}")]
+
+    with col_g:
+        st.markdown("**Gold**")
+        gd_selected = [c for c in gold_cats if st.checkbox(c.replace("Gold - ", ""), value=True, key=f"gd_{c}")]
+
+    with col_h:
+        st.markdown("**Hybrid**")
+        hy_selected = [c for c in hybrid_cats if st.checkbox(c.replace("Hybrid - ", ""), value=True, key=f"hy_{c}")]
+
+    with col_d:
+        st.markdown("**Debt**")
+        dt_selected = [c for c in debt_cats if st.checkbox(c.replace("Debt - ", ""), value=True, key=f"dt_{c}")]
+
+    st.divider()
+
+    # ── Date ranges ──
+    st.subheader("Date ranges")
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        equity_start = st.date_input(
+            "Equity / Gold / Hybrid — start date",
+            value=date(2016, 6, 30),
+            min_value=date(2000, 1, 1),
+            max_value=date.today(),
         )
-
-    with col2:
-        start_date = st.date_input(
-            "Start date",
-            value=date(2015, 1, 1),
+    with col_d2:
+        debt_start = st.date_input(
+            "Debt — start date",
+            value=date(2021, 6, 30),
             min_value=date(2000, 1, 1),
             max_value=date.today(),
         )
 
     st.divider()
 
-    if not selected_cats:
+    equity_gold_hybrid_selected = eq_selected + gd_selected + hy_selected
+    all_selected                = equity_gold_hybrid_selected + dt_selected
+
+    if not all_selected:
         st.warning("Select at least one category to continue.")
         return
 
-    by_category = filter_schemes(all_schemes, selected_cats)
-    total       = sum(len(v) for v in by_category.values())
-    cached      = sum(1 for s in all_schemes
-                      if s["category"] in set(selected_cats)
-                      and (CACHE_DIR / f"{s['code']}.json").exists())
+    # ── Metrics ──
+    by_display = build_display_map(schemes, all_selected)
+    total      = sum(len(v) for v in by_display.values())
+    cached     = sum(
+        1
+        for cat_schemes in by_display.values()
+        for s in cat_schemes
+        if (CACHE_DIR / f"{s['code']}.json").exists()
+    )
 
     col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Categories selected", len(by_category))
-    col_b.metric("Total schemes", total)
-    col_c.metric("Already cached", f"{cached} / {total}")
+    col_a.metric("Categories selected", len(by_display))
+    col_b.metric("Total schemes",        total)
+    col_c.metric("Already cached",       f"{cached} / {total}")
 
     if st.button("🚀 Run Download", type="primary", use_container_width=True):
 
@@ -229,9 +298,11 @@ def main():
 
         collected = {}
         done      = 0
+        debt_set  = set(dt_selected)
 
-        for cat_name in sorted(by_category):
-            cat_schemes = by_category[cat_name]
+        for cat_name in sorted(by_display):
+            cat_schemes = by_display[cat_name]
+            start_date  = str(debt_start if cat_name in debt_set else equity_start)
             all_series  = []
 
             cat_status.markdown(f"**Category:** {cat_name} ({len(cat_schemes)} schemes)")
@@ -239,14 +310,13 @@ def main():
             for scheme in cat_schemes:
                 code = scheme["code"]
                 name = scheme["name"]
-
                 status.caption(f"⬇ {name[:80]}")
 
                 raw = fetch_nav_cached(code)
                 time.sleep(SLEEP_SEC)
 
                 if raw:
-                    series = nav_to_series(raw, name, str(start_date))
+                    series = nav_to_series(raw, name, start_date)
                     if series is not None and not series.empty:
                         all_series.append(series)
 
@@ -271,7 +341,6 @@ def main():
         st.divider()
 
         date_tag = datetime.today().strftime("%Y%m%d")
-
         col_dl1, col_dl2 = st.columns(2)
 
         with col_dl1:
