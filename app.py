@@ -237,11 +237,13 @@ def main():
 
     # ── Cache upload ──
     with st.expander("⚡ Speed up with cached data (optional but recommended)"):
-        st.write("Upload a previously downloaded cache ZIP to skip re-downloading.")
-        uploaded = st.file_uploader("Upload cache ZIP", type="zip", label_visibility="collapsed")
+        st.write("Upload one or more cache ZIPs — you can split by asset class (e.g. debt.zip, equity.zip) or share across teammates.")
+        uploaded = st.file_uploader("Upload cache ZIP(s)", type="zip", accept_multiple_files=True, label_visibility="collapsed")
         if uploaded:
-            count = load_cache_zip(uploaded)
-            st.success(f"✅ Cache loaded — {count:,} funds ready.")
+            total_count = 0
+            for f in uploaded:
+                total_count = load_cache_zip(f)
+            st.success(f"✅ Cache loaded — {total_count:,} funds ready across {len(uploaded)} file(s).")
 
     st.divider()
 
