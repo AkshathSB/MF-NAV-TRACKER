@@ -1,5 +1,5 @@
-streamlit==1.45.1
-requests==2.32.3
-pandas==2.2.3
-openpyxl==3.1.5
-rapidfuzz==3.10.1
+streamlit
+requests
+pandas
+openpyxl
+rapidfuzz
