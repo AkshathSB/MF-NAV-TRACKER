@@ -394,17 +394,55 @@ def main():
         progress_bar = st.progress(0)
         status       = st.empty()
         cat_status   = st.empty()
+        cat_summary  = st.empty()  # Category-level completion summary
 
         collected = {}
         done      = 0
         debt_set  = set(dt_selected)
 
-        for cat_name in sorted(by_display):
+        # Group category names by asset class for the summary panel
+        asset_class_of = {}
+        for display in by_display:
+            if display in CATEGORY_MAP:
+                asset_class_of[display] = CATEGORY_MAP[display][0]
+            elif display.startswith("Custom - "):
+                asset_class_of[display] = "Custom"
+            else:
+                asset_class_of[display] = "Other"
+
+        completed_cats = set()
+        cat_order      = sorted(by_display)
+
+        def render_summary(current_cat=None):
+            """Build a compact table showing done / in-progress / pending per asset class."""
+            lines = ["**Category status**", ""]
+            for ac in ["Equity", "Gold", "Hybrid", "Debt", "Custom", "Other"]:
+                cats_in_ac = [c for c in cat_order if asset_class_of.get(c) == ac]
+                if not cats_in_ac:
+                    continue
+                done_n    = sum(1 for c in cats_in_ac if c in completed_cats)
+                total_n   = len(cats_in_ac)
+                lines.append(f"- **{ac}** — {done_n} / {total_n} done")
+                for c in cats_in_ac:
+                    if c in completed_cats:
+                        icon = "✅"
+                    elif c == current_cat:
+                        icon = "⏳"
+                    else:
+                        icon = "⬜"
+                    short = c.replace(f"{ac} - ", "") if ac in ["Equity", "Gold", "Hybrid", "Debt"] else c
+                    lines.append(f"  - {icon} {short}")
+            cat_summary.markdown("\n".join(lines))
+
+        render_summary()
+
+        for cat_name in cat_order:
             cat_schemes = by_display[cat_name]
             start_date  = str(debt_start if cat_name in debt_set else equity_start)
             all_series  = []
 
-            cat_status.markdown(f"**Category:** {cat_name} ({len(cat_schemes)} schemes)")
+            cat_status.markdown(f"**Currently downloading:** {cat_name} ({len(cat_schemes)} schemes)")
+            render_summary(current_cat=cat_name)
 
             for scheme in cat_schemes:
                 code = scheme["code"]
@@ -423,11 +461,14 @@ def main():
                 progress_bar.progress(done / total)
 
             if all_series:
-                df = pd.concat(all_series, axis=1)
+                df = pd.concat(all_series, axis=1, sort=True)
                 df.index.name = "Date"
                 df.index = df.index.strftime("%Y-%m-%d")
                 df = df.sort_index()
                 collected[cat_name] = df
+
+            completed_cats.add(cat_name)
+            render_summary()
 
         status.caption("Building Excel file...")
         excel_bytes = build_excel_bytes(collected)
@@ -435,6 +476,7 @@ def main():
         progress_bar.empty()
         status.empty()
         cat_status.empty()
+        cat_summary.empty()
 
         st.success(f"✅ Done! {len(collected)} sheets ready.")
         st.divider()
